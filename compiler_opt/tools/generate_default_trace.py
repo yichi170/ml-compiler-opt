@@ -14,6 +14,7 @@
 """Generate initial training data from the behavior of the current heuristic."""
 
 import functools
+import os
 
 from absl import app
 from absl import flags
@@ -56,6 +57,7 @@ _KEYS_FILE = flags.DEFINE_string(
 
 
 def main(_):
+  os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
   gin.parse_config_files_and_bindings(
       _GIN_FILES.value, bindings=_GIN_BINDINGS.value, skip_unknown=False)
   logging.info(gin.config_str())

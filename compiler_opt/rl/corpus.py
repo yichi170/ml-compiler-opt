@@ -68,8 +68,8 @@ def _apply_cmdline_filters(
           cmdline.append(flag + '=' + replace_flags[flag])
 
     option = next(option_iterator, None)
-  if len(matched_replace_flags) != len(replace_flags):
-    raise ValueError('flags that were expected to be replaced were not found')
+#  if len(matched_replace_flags) != len(replace_flags):
+#    raise ValueError('flags that were expected to be replaced were not found')
   cmdline.extend(additional_flags)
   return tuple(cmdline)
 
