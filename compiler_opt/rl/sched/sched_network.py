@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Actor network for Register Allocation."""
+"""Actor network for Instruction Scheduling."""
 
 from typing import Any
 from collections.abc import Sequence, Callable
@@ -25,22 +25,22 @@ from tf_agents.typing import types
 from tf_agents.utils import nest_utils
 
 
-class RegAllocEncodingNetwork(encoding_network.EncodingNetwork):
+class SchedEncodingNetwork(encoding_network.EncodingNetwork):
 
   def __init__(self, **kwargs):
     super().__init__(**kwargs)
     # remove the first layer (Flatten) in postprocessing_layers cause this will
-    # flatten the B x T x 33 x dim to B x T x (33 x dim).
+    # flatten the B x T x 128 x dim to B x T x (128 x dim).
     self._postprocessing_layers = self._postprocessing_layers[1:]
 
 
-class RegAllocProbProjectionNetwork(
+class SchedProbProjectionNetwork(
     categorical_projection_network.CategoricalProjectionNetwork):
 
   def __init__(self, **kwargs):
     super().__init__(**kwargs)
-    # shape after projection_layer: B x T x 33 x 1; then gets re-shaped to
-    # B x T x 33.
+    # shape after projection_layer: B x T x 128 x 1; then gets re-shaped to
+    # B x T x 128.
     self._projection_layer = tf.keras.layers.Dense(
         1,
         kernel_initializer=tf.compat.v1.keras.initializers.VarianceScaling(
@@ -50,19 +50,19 @@ class RegAllocProbProjectionNetwork(
 
 
 @gin.configurable
-class RegAllocRNDEncodingNetwork(RegAllocEncodingNetwork):
+class SchedRNDEncodingNetwork(SchedEncodingNetwork):
 
   def __init__(self, **kwargs):
     pooling_layer = tf.keras.layers.GlobalMaxPool1D(data_format='channels_last')
     super().__init__(**kwargs)
-    # add a pooling layer at the end to to convert B x T x 33 x dim to
+    # add a pooling layer at the end to to convert B x T x 128 x dim to
     # B x T x dim.
     self._postprocessing_layers.append(pooling_layer)
 
 
 @gin.configurable
-class RegAllocNetwork(network.DistributionNetwork):
-  """Creates the actor network for register allocation policy training."""
+class SchedNetwork(network.DistributionNetwork):
+  """Creates the actor network for instruction scheduling policy training."""
 
   def __init__(
       self,
@@ -78,7 +78,7 @@ class RegAllocNetwork(network.DistributionNetwork):
       kernel_initializer: tf.keras.initializers.Initializer | None = None,
       batch_squash: bool = True,
       dtype: tf.DType = tf.float32,
-      name: str = 'RegAllocNetwork'):
+      name: str = 'SchedNetwork'):
     """Creates an instance of `RegAllocNetwork`.
 
     Args:
@@ -125,8 +125,8 @@ class RegAllocNetwork(network.DistributionNetwork):
       kernel_initializer = tf.compat.v1.keras.initializers.glorot_uniform()
 
     # input: B x T x obs_spec
-    # output: B x T x 33 x dim
-    encoder = RegAllocEncodingNetwork(
+    # output: B x T x 128 x dim
+    encoder = SchedEncodingNetwork(
         input_tensor_spec=input_tensor_spec,
         preprocessing_layers=preprocessing_layers,
         preprocessing_combiner=preprocessing_combiner,
@@ -138,7 +138,7 @@ class RegAllocNetwork(network.DistributionNetwork):
         batch_squash=batch_squash,
         dtype=dtype)
 
-    projection_network = RegAllocProbProjectionNetwork(
+    projection_network = SchedProbProjectionNetwork(
         sample_spec=output_tensor_spec, logits_init_output_factor=0.1)
     output_spec = projection_network.output_spec
 

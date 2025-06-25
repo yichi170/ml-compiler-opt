@@ -17,8 +17,8 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 from tf_agents.specs import tensor_spec
 
-from compiler_opt.rl.regalloc import config
-from compiler_opt.rl.regalloc import regalloc_network
+from compiler_opt.rl.sched import config
+from compiler_opt.rl.sched import sched_network
 
 
 def _observation_processing_layer(obs_spec):
@@ -27,16 +27,16 @@ def _observation_processing_layer(obs_spec):
   def expand_progress(obs):
     if obs_spec.name == 'progress':
       obs = tf.expand_dims(obs, -1)
-      obs = tf.tile(obs, [1, config.get_num_registers()])
+      obs = tf.tile(obs, [1, config.get_num_candidates()])
     return tf.expand_dims(tf.cast(obs, tf.float32), -1)
 
   return tf.keras.layers.Lambda(expand_progress)
 
 
-class RegAllocNetworkTest(tf.test.TestCase):
+class SchedNetworkTest(tf.test.TestCase):
 
   def setUp(self):
-    time_step_spec, action_spec = config.get_regalloc_signature_spec()
+    time_step_spec, action_spec = config.get_sched_signature_spec()
     random_observation = tensor_spec.sample_spec_nest(
         time_step_spec, outer_dims=(2, 3))
     super().setUp()
@@ -48,7 +48,7 @@ class RegAllocNetworkTest(tf.test.TestCase):
     layers = tf.nest.map_structure(_observation_processing_layer,
                                    self._time_step_spec.observation)
 
-    net = regalloc_network.RegAllocNetwork(
+    net = sched_network.SchedNetwork(
         self._time_step_spec.observation,
         self._action_spec,
         preprocessing_layers=layers,
@@ -61,7 +61,7 @@ class RegAllocNetworkTest(tf.test.TestCase):
     self.assertIsInstance(action_distributions, tfp.distributions.Categorical)
     self.assertEqual([2, 3], action_distributions.mode().shape.as_list())
     self.assertAllInRange(action_distributions.mode(), 0,
-                          config.get_num_registers() - 1)
+                          config.get_num_candidates() - 1)
 
 
 if __name__ == '__main__':

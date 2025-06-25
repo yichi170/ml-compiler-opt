@@ -103,6 +103,7 @@ def generate_trace(data_path: str,
 
   # Sampling if needed.
   sampled_modules = int(len(cps) * sampling_rate)
+  logging.info(f'Sampling size: {sampled_modules}')
   # sort files by size, to process the large files upfront, hopefully while
   # other smaller files are processed in parallel
   corpus_elements = cps.sample(k=sampled_modules, sort=True)

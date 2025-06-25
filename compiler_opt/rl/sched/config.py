@@ -20,40 +20,43 @@ from tf_agents.trajectories import time_step
 from compiler_opt.rl import feature_ops
 
 
-def get_num_registers():
-  return 33
+def get_num_candidates():
+  return 128
 
 
 # pylint: disable=g-complex-comprehension
 @gin.configurable()
 def get_sched_signature_spec():
   """Returns (time_step_spec, action_spec) for LLVM register allocation."""
-  num_registers = get_num_registers()
+  num_candidates = get_num_candidates()
 
   observation_spec = {
-      key: tf.TensorSpec(dtype=tf.int64, shape=(num_registers), name=key)
-      for key in ('mask', 'is_hint', 'is_local', 'is_free')
+      key: tf.TensorSpec(dtype=tf.int64, shape=(num_candidates), name=key)
+      for key in ('mask', 'is_top', 'is_bot',
+                  'bias_phy_regs', 'excess_unit_inc', 'critical_max_unit_inc')
   }
-  observation_spec.update({
-      key:
-          tensor_spec.BoundedTensorSpec(
-              dtype=tf.int64,
-              shape=(num_registers),
-              name=key,
-              minimum=0,
-              maximum=6) for key in ('max_stage', 'min_stage')
-  })
-  observation_spec.update({
-      key: tf.TensorSpec(dtype=tf.float32, shape=(num_registers), name=key)
-      for key in ('weighed_reads_by_max', 'weighed_writes_by_max',
-                  'weighed_read_writes_by_max', 'weighed_indvars_by_max',
-                  'hint_weights_by_max', 'start_bb_freq_by_max',
-                  'end_bb_freq_by_max', 'hottest_bb_freq_by_max',
-                  'liverange_size', 'use_def_density', 'nr_defs_and_uses',
-                  'nr_broken_hints', 'nr_urgent', 'nr_rematerializable')
-  })
-  observation_spec['progress'] = tensor_spec.BoundedTensorSpec(
-      dtype=tf.float32, shape=(), name='progress', minimum=0, maximum=1)
+  # observation_spec.update({
+  #     key:
+  #         tensor_spec.BoundedTensorSpec(
+  #             dtype=tf.int64,
+  #             shape=(num_candidates),
+  #             name=key,
+  #             minimum=0,
+  #             maximum=6) for key in ('max_stage', 'min_stage')
+  # })
+
+  # observation_spec.update({
+  #     key: tf.TensorSpec(dtype=tf.float32, shape=(num_candidates), name=key)
+  #     for key in ('weighed_reads_by_max', 'weighed_writes_by_max',
+  #                 'weighed_read_writes_by_max', 'weighed_indvars_by_max',
+  #                 'hint_weights_by_max', 'start_bb_freq_by_max',
+  #                 'end_bb_freq_by_max', 'hottest_bb_freq_by_max',
+  #                 'liverange_size', 'use_def_density', 'nr_defs_and_uses',
+  #                 'nr_broken_hints', 'nr_urgent', 'nr_rematerializable')
+  # })
+
+  # observation_spec['progress'] = tensor_spec.BoundedTensorSpec(
+  #     dtype=tf.float32, shape=(), name='progress', minimum=0, maximum=1)
 
   reward_spec = tf.TensorSpec(dtype=tf.float32, shape=(), name='reward')
   time_step_spec = time_step.time_step_spec(observation_spec, reward_spec)
@@ -61,9 +64,9 @@ def get_sched_signature_spec():
   action_spec = tensor_spec.BoundedTensorSpec(
       dtype=tf.int64,
       shape=(),
-      name='index_to_evict',
+      name='index_to_sched',
       minimum=0,
-      maximum=num_registers - 1)
+      maximum=num_candidates - 1)
 
   return time_step_spec, action_spec
 
@@ -81,7 +84,8 @@ def get_observation_processing_layer_creator(quantile_file_dir=None,
     if obs_spec.name in ('mask', 'nr_urgent'):
       return tf.keras.layers.Lambda(feature_ops.discard_fn)
 
-    if obs_spec.name in ('is_hint', 'is_local', 'is_free'):
+    if obs_spec.name in ('is_top', 'is_bot', 'bias_phy_regs',
+                         'excess_unit_inc', 'critical_max_unit_inc'):
       return tf.keras.layers.Lambda(feature_ops.identity_fn)
 
     if obs_spec.name in ('max_stage', 'min_stage'):
@@ -129,7 +133,7 @@ def get_observation_processing_layer_creator(quantile_file_dir=None,
 
       def progress_processing_fn(obs):
         obs = tf.expand_dims(obs, -1)
-        obs = tf.tile(obs, [1, get_num_registers()])
+        obs = tf.tile(obs, [1, get_num_candidates()])
         obs = normalize_fn(obs)
         return obs
 
@@ -143,6 +147,7 @@ def get_observation_processing_layer_creator(quantile_file_dir=None,
 
 def get_nonnormalized_features():
   return [
-      'mask', 'nr_urgent', 'is_hint', 'is_local', 'is_free', 'max_stage',
-      'min_stage', 'reward'
+      'mask', 'is_top', 'is_bot', 'bias_phy_regs',
+      'excess_unit_inc', 'critical_max_unit_inc',
+      'reward'
   ]
