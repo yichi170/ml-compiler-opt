@@ -72,11 +72,14 @@ class SchedRunner(compilation_runner.CompilationRunner):
     if self._launcher_path:
       cmdline.append(self._launcher_path)
     cmdline.extend([self._clang_path] + list(command_line) + [
+        '-mllvm', '-amdgpu-sched-strategy=iterative-maxocc',
+        '-mllvm', '-sched-mode=development',
         '-mllvm', '-mlsched-training-log=' + log_path, '-o', output_native_path
     ])
 
     # if tf_policy_path:
     #   cmdline.extend(['-mllvm', '-regalloc-model=' + tf_policy_path])
+    # print('cmd: ', ' '.join(cmdline))
     compilation_runner.start_cancellable_process(cmdline,
                                                  self._compilation_timeout,
                                                  self._cancellation_manager)

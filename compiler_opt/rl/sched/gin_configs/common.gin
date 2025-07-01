@@ -7,7 +7,7 @@ runners.SchedRunner.clang_path=%clang_path
 runners.SchedRunner.launcher_path=%launcher_path
 
 problem_config.flags_to_add.add_flags=('-Wno-backend-plugin',)
-problem_config.flags_to_delete.delete_flags=('-split-dwarf-file','-split-dwarf-output','-amdgpu-coerce-illegal-types=1','-amdgpu-early-inline-all=true')
+problem_config.flags_to_delete.delete_flags=('-split-dwarf-file','-split-dwarf-output')
 # For AFDO profile reinjection set:
 # problem_config.flags_to_replace.replace_flags={'-fprofile-sample-use':'/path/to/gwp.afdo','-fprofile-remapping-file':'/path/to/prof_remap.txt'}
 # problem_config.flags_to_replace.replace_flags = {'-fprofile-instrument-use-path':'/home/yichilee/git/chromium/src/chrome/build/pgo_profiles/chrome-linux-main-1749446856-b18f9994856ae25003a7215792a299a9c153d29d-3d8e1ae50db0f9b484ae626a8df2511f5a1b0df8.profdata', '--warning-suppression-mappings': '/home/yichilee/git/chromium/src/build/config/warning_suppression.txt'}
