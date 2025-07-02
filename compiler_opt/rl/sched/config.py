@@ -32,8 +32,10 @@ def get_sched_signature_spec():
 
   observation_spec = {
       key: tf.TensorSpec(dtype=tf.int64, shape=(num_candidates), name=key)
-      for key in ('mask', 'is_top', 'is_bot',
-                  'bias_phy_regs', 'excess_unit_inc', 'critical_max_unit_inc')
+      for key in ('mask', 'is_top', 'is_bot', 'pos',
+                  'excess', 'current_max', 'critical_max',
+                  'su_latency', 'su_height', 'su_depth',
+                  'su_succs_left', 'su_preds_left', 'su_succs', 'su_preds')
   }
   # observation_spec.update({
   #     key:
@@ -55,8 +57,11 @@ def get_sched_signature_spec():
   #                 'nr_broken_hints', 'nr_urgent', 'nr_rematerializable')
   # })
 
-  # observation_spec['progress'] = tensor_spec.BoundedTensorSpec(
-  #     dtype=tf.float32, shape=(), name='progress', minimum=0, maximum=1)
+  observation_spec.update({
+      key: tf.TensorSpec(dtype=tf.int64, shape=(), name=key)
+      for key in ('sgpr_critical_limit', 'vgpr_critical_limit',
+                  'sgpr_excess_limit', 'vgpr_excess_limit')
+  })
 
   reward_spec = tf.TensorSpec(dtype=tf.float32, shape=(), name='reward')
   time_step_spec = time_step.time_step_spec(observation_spec, reward_spec)
@@ -81,11 +86,13 @@ def get_observation_processing_layer_creator(quantile_file_dir=None,
 
   def observation_processing_layer(obs_spec):
     """Creates the layer to process observation given obs_spec."""
-    if obs_spec.name in ('mask', 'nr_urgent'):
+    if obs_spec.name in ('mask'):
       return tf.keras.layers.Lambda(feature_ops.discard_fn)
 
-    if obs_spec.name in ('is_top', 'is_bot', 'bias_phy_regs',
-                         'excess_unit_inc', 'critical_max_unit_inc'):
+    if obs_spec.name in ('is_top', 'is_bot', 'pos',
+                         'excess', 'current_max', 'critical_max',
+                         'su_latency', 'su_height', 'su_depth',
+                         'su_succs_left', 'su_preds_left', 'su_succs', 'su_preds'):
       return tf.keras.layers.Lambda(feature_ops.identity_fn)
 
     if obs_spec.name in ('max_stage', 'min_stage'):
