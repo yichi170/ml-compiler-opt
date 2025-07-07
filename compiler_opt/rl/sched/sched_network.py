@@ -79,7 +79,7 @@ class SchedNetwork(network.DistributionNetwork):
       batch_squash: bool = True,
       dtype: tf.DType = tf.float32,
       name: str = 'SchedNetwork'):
-    """Creates an instance of `RegAllocNetwork`.
+    """Creates an instance of `SchedNetwork`.
 
     Args:
       input_tensor_spec: A nest of `tensor_spec.TensorSpec` representing the
@@ -170,7 +170,7 @@ class SchedNetwork(network.DistributionNetwork):
         training=training)
     outer_rank = nest_utils.get_outer_rank(observations, self.input_tensor_spec)
 
-    # mask un-evictable registers.
+    # mask out the empty data.
     distribution, _ = self._projection_network(
         state, outer_rank, training=training, mask=observations['mask'])
 

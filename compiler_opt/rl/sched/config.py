@@ -21,7 +21,7 @@ from compiler_opt.rl import feature_ops
 
 
 def get_num_candidates():
-  return 128
+  return 256
 
 
 # pylint: disable=g-complex-comprehension
@@ -37,25 +37,6 @@ def get_sched_signature_spec():
                   'su_latency', 'su_height', 'su_depth',
                   'su_succs_left', 'su_preds_left', 'su_succs', 'su_preds')
   }
-  # observation_spec.update({
-  #     key:
-  #         tensor_spec.BoundedTensorSpec(
-  #             dtype=tf.int64,
-  #             shape=(num_candidates),
-  #             name=key,
-  #             minimum=0,
-  #             maximum=6) for key in ('max_stage', 'min_stage')
-  # })
-
-  # observation_spec.update({
-  #     key: tf.TensorSpec(dtype=tf.float32, shape=(num_candidates), name=key)
-  #     for key in ('weighed_reads_by_max', 'weighed_writes_by_max',
-  #                 'weighed_read_writes_by_max', 'weighed_indvars_by_max',
-  #                 'hint_weights_by_max', 'start_bb_freq_by_max',
-  #                 'end_bb_freq_by_max', 'hottest_bb_freq_by_max',
-  #                 'liverange_size', 'use_def_density', 'nr_defs_and_uses',
-  #                 'nr_broken_hints', 'nr_urgent', 'nr_rematerializable')
-  # })
 
   observation_spec.update({
       key: tf.TensorSpec(dtype=tf.int64, shape=(), name=key)
@@ -86,17 +67,11 @@ def get_observation_processing_layer_creator(quantile_file_dir=None,
 
   def observation_processing_layer(obs_spec):
     """Creates the layer to process observation given obs_spec."""
-    if obs_spec.name in ('mask'):
-      return tf.keras.layers.Lambda(feature_ops.discard_fn)
+#    if obs_spec.name in ('mask'):
+#      return tf.keras.layers.Lambda(feature_ops.discard_fn)
 
-    if obs_spec.name in ('is_top', 'is_bot', 'pos',
-                         'excess', 'current_max', 'critical_max',
-                         'su_latency', 'su_height', 'su_depth',
-                         'su_succs_left', 'su_preds_left', 'su_succs', 'su_preds'):
+    if obs_spec.name in ('mask', 'is_top', 'is_bot'):
       return tf.keras.layers.Lambda(feature_ops.identity_fn)
-
-    if obs_spec.name in ('max_stage', 'min_stage'):
-      return tf.keras.layers.Embedding(7, 4)
 
     normalize_fn = log_normalize_fn = None
     if obs_spec.name not in get_nonnormalized_features():
@@ -118,11 +93,11 @@ def get_observation_processing_layer_creator(quantile_file_dir=None,
           eps,
           preprocessing_fn=lambda x: tf.math.log(x + first_non_zero))
 
-    if obs_spec.name in ['nr_rematerializable', 'nr_broken_hints']:
+    if obs_spec.name in ['pos', 'excess', 'current_max', 'critical_max',
+                         'su_succs_left', 'su_preds_left', 'su_succs', 'su_preds']:
       return tf.keras.layers.Lambda(normalize_fn)
 
-    if obs_spec.name in ('liverange_size', 'nr_defs_and_uses'
-                        ) or obs_spec.name.endswith('by_max'):
+    if obs_spec.name in ('su_latency', 'su_height', 'su_depth'):
       return tf.keras.layers.Lambda(log_normalize_fn)
 
     if obs_spec.name == 'use_def_density':
@@ -136,15 +111,17 @@ def get_observation_processing_layer_creator(quantile_file_dir=None,
 
       return tf.keras.layers.Lambda(use_def_density_processing_fn)
 
-    if obs_spec.name == 'progress':
+    if obs_spec.name in ('sgpr_critical_limit',
+                         'vgpr_critical_limit',
+                         'sgpr_excess_limit',
+                         'vgpr_excess_limit'):
 
-      def progress_processing_fn(obs):
+      def gpr_limit_processing_fn(obs):
         obs = tf.expand_dims(obs, -1)
         obs = tf.tile(obs, [1, get_num_candidates()])
         obs = normalize_fn(obs)
         return obs
-
-      return tf.keras.layers.Lambda(progress_processing_fn)
+      return tf.keras.layers.Lambda(gpr_limit_processing_fn)
 
     # Make sure all features have a preprocessing function.
     raise KeyError('Missing preprocessing function for some feature.')
@@ -154,7 +131,5 @@ def get_observation_processing_layer_creator(quantile_file_dir=None,
 
 def get_nonnormalized_features():
   return [
-      'mask', 'is_top', 'is_bot', 'bias_phy_regs',
-      'excess_unit_inc', 'critical_max_unit_inc',
-      'reward'
+      'mask', 'is_top', 'is_bot', 'reward'
   ]
