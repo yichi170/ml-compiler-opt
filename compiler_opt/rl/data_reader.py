@@ -21,6 +21,65 @@ from tf_agents.trajectories import trajectory
 from compiler_opt.rl import agent_config
 
 
+def clean_sched_observation(observation_dict, action):
+  """Clean scheduling observation by masking invalid candidates and updating action.
+
+  Args:
+      observation_dict: Dictionary of observation tensors
+      action: Action tensor (index_to_sched)
+
+  Returns:
+      Tuple of (cleaned_observation_dict, cleaned_action)
+  """
+  # Get the mask
+  mask = observation_dict['mask']
+
+  # Find valid indices (where mask == 1)
+  valid_indices = tf.where(tf.equal(mask, 1))[:, 0]
+
+  # Update action to new index
+  try:
+    new_action = tf.where(tf.equal(valid_indices, action))[0, 0]
+  except tf.errors.InvalidArgumentError:
+    # Action was masked out, return None to filter this sample
+    return None, None
+
+  # For each per-candidate feature, keep only valid candidates and pad back to original size
+  per_candidate_features = [
+    'mask', 'is_top', 'is_bot', 'pos', 'excess', 'current_max', 'critical_max',
+    'su_latency', 'su_height', 'su_depth', 'su_succs_left', 'su_preds_left',
+    'su_succs', 'su_preds'
+  ]
+
+  cleaned_observation = {}
+
+  for feature_name in observation_dict:
+    if feature_name in per_candidate_features:
+      # Get valid values
+      feature_tensor = observation_dict[feature_name]
+      valid_values = tf.gather(feature_tensor, valid_indices)
+
+      # Create new mask for cleaned data
+      if feature_name == 'mask':
+        # All remaining candidates are valid
+        cleaned_feature = tf.concat([
+          tf.ones(tf.shape(valid_values), dtype=feature_tensor.dtype),
+          tf.zeros(tf.shape(feature_tensor)[0] - tf.shape(valid_values)[0], dtype=feature_tensor.dtype)
+        ], axis=0)
+      else:
+        # Pad with zeros to maintain original shape
+        padding_size = tf.shape(feature_tensor)[0] - tf.shape(valid_values)[0]
+        padding = tf.zeros([padding_size], dtype=feature_tensor.dtype)
+        cleaned_feature = tf.concat([valid_values, padding], axis=0)
+
+      cleaned_observation[feature_name] = cleaned_feature
+    else:
+      # Non-per-candidate features remain unchanged
+      cleaned_observation[feature_name] = observation_dict[feature_name]
+
+  return cleaned_observation, new_action
+
+
 def create_parser_fn(
     agent_cfg: agent_config.AgentConfig
 ) -> Callable[[str], trajectory.Trajectory]:
@@ -70,6 +129,25 @@ def create_parser_fn(
       reward = tf.cast(parsed_sequence[agent_cfg.time_step_spec.reward.name],
                        tf.float32)
 
+      # Apply cleaning for scheduling data if this is a scheduling problem
+      if 'mask' in parsed_sequence and agent_cfg.action_spec.name == 'index_to_sched':
+        # This is scheduling data, apply cleaning
+        cleaned_obs, cleaned_action = clean_sched_observation(parsed_sequence, action)
+        if cleaned_obs is not None:
+          # Replace with cleaned data
+          for key in cleaned_obs:
+            parsed_sequence[key] = cleaned_obs[key]
+          action = cleaned_action
+        else:
+          # Skip this sample by returning a dummy trajectory
+          # This will be filtered out later
+          dummy_obs = {k: tf.zeros_like(v) for k, v in parsed_sequence.items()}
+          return trajectory.from_episode(
+              observation=dummy_obs,
+              action=tf.zeros_like(action),
+              policy_info={},
+              reward=tf.zeros_like(reward))
+
       policy_info = agent_cfg.process_parsed_sequence_and_get_policy_info(
           parsed_sequence)
 
@@ -83,6 +161,16 @@ def create_parser_fn(
       return full_trajectory
 
   return _parser_fn
+
+
+def _filter_dummy_trajectories(traj):
+  """Filter out dummy trajectories created when actions were masked out."""
+  # Check if this is a dummy trajectory (all zeros)
+  if 'mask' in traj.observation:
+    mask_sum = tf.reduce_sum(traj.observation['mask'])
+    # If mask is all zeros, this is a dummy trajectory
+    return tf.greater(mask_sum, 0)
+  return True
 
 
 def create_flat_sequence_example_dataset_fn(
@@ -114,6 +202,7 @@ def create_flat_sequence_example_dataset_fn(
                 .filter(lambda string: tf.strings.length(string) > 0)
                 .map(parser_fn)
                 .filter(lambda traj: tf.size(traj.reward) > 2)
+                .filter(_filter_dummy_trajectories)
                 .unbatch()
                )
     # yapf: enable
@@ -202,7 +291,8 @@ def create_file_dataset_fn(
                  count=shuffle_repeat_count))
         .map(parser_fn, num_parallel_calls=num_map_threads)
         # Only keep sequences of length 2 or more.
-        .filter(lambda traj: tf.size(traj.reward) > 2))
+        .filter(lambda traj: tf.size(traj.reward) > 2)
+        .filter(_filter_dummy_trajectories))
 
     # TODO(yundi): window and subsample data.
     # TODO(yundi): verify the shuffling is correct.
