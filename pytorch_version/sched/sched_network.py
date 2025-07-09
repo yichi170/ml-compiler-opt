@@ -22,19 +22,24 @@ import torch.nn.functional as F
 class SchedNetwork(nn.Module):
     """Creates the actor network for instruction scheduling policy training."""
 
-    def __init__(self, input_shape, num_actions, fc_layer_params=(200, 100)):
+    def __init__(self, observation_spec, num_actions, fc_layer_params=(200, 100)):
         """Creates an instance of `SchedNetwork`.
 
         Args:
-            input_shape: A tuple representing the input shape.
+            observation_spec: A dictionary of TensorSpecs defining the observation space.
             num_actions: The number of possible actions.
             fc_layer_params: Optional list of fully_connected parameters, where each
                 item is the number of units in the layer.
         """
         super(SchedNetwork, self).__init__()
 
+        self._observation_spec = observation_spec
+        total_input_dim = 0
+        for spec in observation_spec.values():
+            total_input_dim += torch.prod(torch.tensor(spec.shape)).item()
+
         self.encoder = nn.Sequential(
-            nn.Linear(input_shape[-1], fc_layer_params[0]),
+            nn.Linear(int(total_input_dim), fc_layer_params[0]),
             nn.ReLU(),
             nn.Linear(fc_layer_params[0], fc_layer_params[1]),
             nn.ReLU(),
@@ -46,14 +51,31 @@ class SchedNetwork(nn.Module):
         """Forward pass of the network.
 
         Args:
-            observations: The input observations.
+            observations: A dictionary of input observations.
             mask: An optional mask to apply to the output logits.
 
         Returns:
             The output logits from the network.
         """
-        # Pass the observations through the encoder
-        state = self.encoder(observations)
+        # Concatenate all observation features
+        # Ensure consistent order by sorting keys
+        sorted_keys = sorted(self._observation_spec.keys())
+
+        # Handle batch dimension for scalar features
+        # If a feature is scalar (shape=()), it will be (batch_size,) after from_numpy
+        # We need to unsqueeze it to (batch_size, 1) to concatenate correctly
+        processed_observations = []
+        for key in sorted_keys:
+            tensor = observations[key]
+            if len(self._observation_spec[key].shape) == 0: # It's a scalar
+                processed_observations.append(tensor.unsqueeze(-1))
+            else:
+                processed_observations.append(tensor)
+
+        concatenated_observations = torch.cat(processed_observations, dim=-1)
+
+        # Pass the concatenated observations through the encoder
+        state = self.encoder(concatenated_observations)
 
         # Get the logits from the projection network
         logits = self.projection_network(state)

@@ -26,10 +26,14 @@ import tensorflow as tf
 
 from pytorch_version import specs
 
-from pytorch_version.sched.sched_network import SchedNetwork
+from pytorch_version.rl.ppo_agent import PPOAgent
+
+# Assuming SchedNetwork and RegAllocNetwork are still needed for their specs
+# from pytorch_version.sched.sched_network import SchedNetwork
+# from pytorch_version.regalloc.regalloc_network import RegAllocNetwork
 
 class TFRecordDataset(Dataset):
-    """A PyTorch Dataset for reading TFRecord files."""
+    """A PyTorch Dataset for reading TFRecord files for RL training."""
 
     def __init__(self, data_path, time_step_spec, action_spec, batch_size, sequence_length):
         self.data_path = data_path
@@ -67,6 +71,10 @@ class TFRecordDataset(Dataset):
             sequence_features[self.action_spec.name] = tf.io.FixedLenSequenceFeature(
                 shape=self.action_spec.shape, dtype=self.action_spec.dtype
             )
+            # Add reward parsing
+            sequence_features['reward'] = tf.io.FixedLenSequenceFeature(
+                shape=self.time_step_spec['reward'].shape, dtype=self.time_step_spec['reward'].dtype
+            )
 
             _, parsed_sequence = tf.io.parse_single_sequence_example(
                 serialized_proto,
@@ -76,8 +84,9 @@ class TFRecordDataset(Dataset):
             
             observation = parsed_sequence
             action = parsed_sequence.pop(self.action_spec.name)
+            reward = parsed_sequence.pop('reward') # Extract reward
             
-            return {'observation': observation, 'action': action}
+            return {'observation': observation, 'action': action, 'reward': reward}
 
         return _parser_fn
 
@@ -90,13 +99,15 @@ class TFRecordDataset(Dataset):
             # Convert TensorFlow tensors to NumPy arrays
             obs_numpy = {k: v.numpy() for k, v in data['observation'].items()}
             action_numpy = data['action'].numpy()
-            return obs_numpy, action_numpy
+            reward_numpy = data['reward'].numpy() # Convert reward to NumPy
+            return obs_numpy, action_numpy, reward_numpy
         except StopIteration:
             # Restart the iterator for the next epoch
             self._create_iterator()
             raise StopIteration
 
     def __len__(self):
+        return 0self):
         return 0
 
 @gin.configurable
@@ -110,18 +121,21 @@ def train(
     learning_rate,
     log_interval,
     save_interval,
+    # PPO specific hyperparameters
+    ppo_epochs=4, # Number of epochs to train on the collected data
+    clip_epsilon=0.2, # PPO clip ratio
+    gae_lambda=0.95, # GAE lambda parameter
+    value_coeff=0.5, # Coefficient for value loss
+    entropy_coeff=0.01, # Coefficient for entropy loss
+    gamma=0.99, # Discount factor
 ):
     """Main training loop."""
     if problem_name == 'regalloc':
         time_step_spec, action_spec = specs.get_regalloc_signature_spec()
-        model_class = RegAllocNetwork
         num_actions = 33
-        # input_feature_name = 'node_features' # Not used for concatenated input
     elif problem_name == 'sched':
         time_step_spec, action_spec = specs.get_sched_signature_spec()
-        model_class = SchedNetwork
         num_actions = 256
-        # input_feature_name = 'pos' # Not used for concatenated input
     else:
         raise ValueError(f"Unknown problem: {problem_name}")
 
@@ -133,75 +147,105 @@ def train(
         sequence_length,
     )
     
-    # input_shape is no longer directly used for model initialization as SchedNetwork
-    # now takes observation_spec directly.
-
-    model = model_class(
+    agent = PPOAgent(
         observation_spec=time_step_spec['observation'],
         num_actions=num_actions,
     )
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    loss_fn = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(agent.parameters(), lr=learning_rate)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
+    agent.to(device)
 
     print(f"Starting training for {problem_name} on {device}...")
 
     for epoch in range(num_epochs):
         start_time = time.time()
+        total_actor_loss = 0
+        total_critic_loss = 0
+        total_entropy_loss = 0
         total_loss = 0
         num_batches = 0
 
-        for observations, actions in dataset:
+        for observations, actions, rewards in dataset:
             # Convert all observation features to PyTorch tensors and move to device
             processed_observations = {}
             for key, value in observations.items():
-                # Convert to PyTorch tensor and move to device
-                # All features should be float32 for the neural network input
                 tensor = torch.from_numpy(value).float().to(device)
-
-                # Reshape from (batch_size, sequence_length, ...) to (batch_size * sequence_length, ...)
-                # For scalar features, this will be (batch_size, sequence_length) -> (batch_size * sequence_length)
-                # For (256,) features, this will be (batch_size, sequence_length, 256) -> (batch_size * sequence_length, 256)
                 if len(tensor.shape) > 2: # If it has sequence_length dimension (e.g., (B, S, F))
                     processed_observations[key] = tensor.view(-1, *tensor.shape[2:])
                 else: # Scalar features will be (B, S) after TFRecordDataset
                     processed_observations[key] = tensor.view(-1)
 
-            targets = torch.from_numpy(actions).long().to(device)
-            
-            # Reshape targets from (batch_size, sequence_length) to (batch_size * sequence_length)
-            targets = targets.view(-1)
+            actions = torch.from_numpy(actions).long().to(device).view(-1)
+            rewards = torch.from_numpy(rewards).float().to(device).view(-1)
 
-            logits = model(processed_observations)
+            # Calculate returns (GAE is not implemented here for simplicity, using simple returns)
+            # For full PPO, GAE would be calculated over trajectories.
+            # Here, we assume rewards are already aligned with actions for each step.
+            returns = torch.zeros_like(rewards)
+            R = 0
+            for t in reversed(range(rewards.shape[0])):
+                R = rewards[t] + gamma * R
+                returns[t] = R
             
-            # Reshape logits and targets for CrossEntropyLoss
-            # logits will be (batch_size * sequence_length, num_actions)
-            # targets will be (batch_size * sequence_length)
-            logits_reshaped = logits.view(-1, num_actions)
-            targets_reshaped = targets.view(-1)
+            # Normalize returns
+            returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+
+            # Get current policy's log_probs and values
+            log_probs, values, entropy = agent.evaluate_actions(processed_observations, actions)
+
+            # Calculate advantage
+            advantages = returns - values.detach()
+
+            # PPO Loss
+            # For simplicity, we're not using an 'old_policy' here, which is crucial for PPO.
+            # A full PPO implementation would involve collecting data with an old policy,
+            # then updating the current policy for several epochs, and then making the current
+            # policy the old policy for the next data collection phase.
+            # This current setup is more like A2C with a clipping mechanism.
+            
+            # Policy Loss (Actor Loss)
+            ratio = torch.exp(log_probs - log_probs.detach()) # log_probs.detach() acts as old_log_probs
+            surr1 = ratio * advantages
+            surr2 = torch.clamp(ratio, 1.0 - clip_epsilon, 1.0 + clip_epsilon) * advantages
+            actor_loss = -torch.min(surr1, surr2).mean()
+
+            # Value Loss (Critic Loss)
+            critic_loss = F.mse_loss(values.squeeze(-1), returns)
+
+            # Total Loss
+            loss = actor_loss + value_coeff * critic_loss - entropy_coeff * entropy.mean()
 
             optimizer.zero_grad()
-            loss = loss_fn(logits_reshaped, targets_reshaped)
             loss.backward()
             optimizer.step()
 
+            total_actor_loss += actor_loss.item()
+            total_critic_loss += critic_loss.item()
+            total_entropy_loss += entropy.mean().item()
             total_loss += loss.item()
             num_batches += 1
 
             if num_batches % log_interval == 0:
-                print(f"Epoch {epoch+1}/{num_epochs}, Batch {num_batches}, Loss: {loss.item():.4f}")
+                print(f"Epoch {epoch+1}/{num_epochs}, Batch {num_batches}, "
+                      f"Total Loss: {loss.item():.4f}, Actor Loss: {actor_loss.item():.4f}, "
+                      f"Critic Loss: {critic_loss.item():.4f}, Entropy: {entropy.mean().item():.4f}")
 
         end_time = time.time()
         epoch_duration = end_time - start_time
-        avg_loss = total_loss / num_batches if num_batches > 0 else 0
-        print(f"Epoch {epoch+1} completed in {epoch_duration:.2f}s. Average loss: {avg_loss:.4f}")
+        avg_total_loss = total_loss / num_batches if num_batches > 0 else 0
+        avg_actor_loss = total_actor_loss / num_batches if num_batches > 0 else 0
+        avg_critic_loss = total_critic_loss / num_batches if num_batches > 0 else 0
+        avg_entropy_loss = total_entropy_loss / num_batches if num_batches > 0 else 0
+
+        print(f"Epoch {epoch+1} completed in {epoch_duration:.2f}s. "
+              f"Average Total Loss: {avg_total_loss:.4f}, Average Actor Loss: {avg_actor_loss:.4f}, "
+              f"Average Critic Loss: {avg_critic_loss:.4f}, Average Entropy: {avg_entropy_loss:.4f}")
 
         if (epoch + 1) % save_interval == 0:
-            checkpoint_path = os.path.join(model_dir, f"model_epoch_{epoch+1}.pt")
-            torch.save(model.state_dict(), checkpoint_path)
-            print(f"Saved model checkpoint to {checkpoint_path}")
+            checkpoint_path = os.path.join(model_dir, f"ppo_agent_epoch_{epoch+1}.pt")
+            torch.save(agent.state_dict(), checkpoint_path)
+            print(f"Saved PPO agent checkpoint to {checkpoint_path}")
 
     print("Training finished.")
 
