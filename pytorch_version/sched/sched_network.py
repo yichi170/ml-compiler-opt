@@ -34,6 +34,8 @@ class SchedNetwork(nn.Module):
         super(SchedNetwork, self).__init__()
 
         self._observation_spec = observation_spec
+        self._is_scalar = {k: (len(spec.shape) == 0) for k, spec in observation_spec.items()}
+
         total_input_dim = 0
         for spec in observation_spec.values():
             total_input_dim += torch.prod(torch.tensor(spec.shape)).item()
@@ -67,7 +69,7 @@ class SchedNetwork(nn.Module):
         processed_observations = []
         for key in sorted_keys:
             tensor = observations[key]
-            if len(self._observation_spec[key].shape) == 0: # It's a scalar
+            if self._is_scalar[key]: # It's a scalar
                 processed_observations.append(tensor.unsqueeze(-1))
             else:
                 processed_observations.append(tensor)

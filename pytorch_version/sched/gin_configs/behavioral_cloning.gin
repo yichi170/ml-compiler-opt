@@ -5,6 +5,6 @@ train.batch_size=64
 train.sequence_length=1
 train.learning_rate=0.001
 train.log_interval=10
-train.save_interval=1
+train.save_interval=10
 
 SchedNetwork.fc_layer_params = (256, 128)

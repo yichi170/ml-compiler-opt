@@ -15,130 +15,52 @@ import argparse
 import os
 import time
 import gin
-import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
 
-# Temporarily suppress TensorFlow logging
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-import tensorflow as tf
-
+import pytorch_version.data as torchdata
 from pytorch_version import specs
-
 from pytorch_version.sched.sched_network import SchedNetwork
-
-class TFRecordDataset(Dataset):
-    """A PyTorch Dataset for reading TFRecord files."""
-
-    def __init__(self, data_path, time_step_spec, action_spec, batch_size, sequence_length):
-        self.data_path = data_path
-        self.time_step_spec = time_step_spec
-        self.action_spec = action_spec
-        self.batch_size = batch_size
-        self.sequence_length = sequence_length
-        
-        self._create_iterator()
-
-    def _create_iterator(self):
-        """Creates a TensorFlow dataset iterator."""
-        parser_fn = self._create_parser_fn()
-        
-        dataset = (
-            tf.data.TFRecordDataset(self.data_path)
-            .filter(lambda string: tf.strings.length(string) > 0)
-            .map(parser_fn)
-            .unbatch()
-            .batch(self.sequence_length, drop_remainder=True)
-            .batch(self.batch_size, drop_remainder=True)
-        )
-        self.iterator = iter(dataset)
-
-    def _create_parser_fn(self):
-        """Creates a parser function for the TFRecord data."""
-        def _parser_fn(serialized_proto):
-            context_features = {}
-            sequence_features = {
-                tensor_spec.name: tf.io.FixedLenSequenceFeature(
-                    shape=tensor_spec.shape, dtype=tensor_spec.dtype
-                )
-                for tensor_spec in self.time_step_spec['observation'].values()
-            }
-            sequence_features[self.action_spec.name] = tf.io.FixedLenSequenceFeature(
-                shape=self.action_spec.shape, dtype=self.action_spec.dtype
-            )
-
-            _, parsed_sequence = tf.io.parse_single_sequence_example(
-                serialized_proto,
-                context_features=context_features,
-                sequence_features=sequence_features,
-            )
-            
-            observation = parsed_sequence
-            action = parsed_sequence.pop(self.action_spec.name)
-            
-            return {'observation': observation, 'action': action}
-
-        return _parser_fn
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        try:
-            data = next(self.iterator)
-            # Convert TensorFlow tensors to NumPy arrays
-            obs_numpy = {k: v.numpy() for k, v in data['observation'].items()}
-            action_numpy = data['action'].numpy()
-            return obs_numpy, action_numpy
-        except StopIteration:
-            # Restart the iterator for the next epoch
-            self._create_iterator()
-            raise StopIteration
-
-    def __len__(self):
-        return 0
 
 @gin.configurable
 def train(
     problem_name,
     data_path,
     model_dir,
-    num_epochs,
-    batch_size,
-    sequence_length,
-    learning_rate,
-    log_interval,
-    save_interval,
+    num_epochs=10,
+    batch_size=64,
+    sequence_length=1,
+    learning_rate=0.001,
+    log_interval=10,
+    save_interval=1,
 ):
     """Main training loop."""
-    if problem_name == 'regalloc':
-        time_step_spec, action_spec = specs.get_regalloc_signature_spec()
-        model_class = RegAllocNetwork
-        num_actions = 33
-        # input_feature_name = 'node_features' # Not used for concatenated input
-    elif problem_name == 'sched':
+    if problem_name == 'sched':
         time_step_spec, action_spec = specs.get_sched_signature_spec()
         model_class = SchedNetwork
         num_actions = 256
-        # input_feature_name = 'pos' # Not used for concatenated input
     else:
         raise ValueError(f"Unknown problem: {problem_name}")
 
-    dataset = TFRecordDataset(
-        data_path,
-        time_step_spec,
-        action_spec,
-        batch_size,
-        sequence_length,
-    )
-    
-    # input_shape is no longer directly used for model initialization as SchedNetwork
-    # now takes observation_spec directly.
+    dataset_cache_path = os.path.join(model_dir, f"{problem_name}_dataset.pt")
+
+    if os.path.exists(dataset_cache_path):
+        print(f"Loading dataset from cache: {dataset_cache_path}")
+        observations, actions = torchdata.load_dataset(dataset_cache_path)
+    else:
+        print(f"Parsing TFRecords from: {data_path}")
+        observations, actions = torchdata.parse_tfrecord_file(
+            data_path, time_step_spec, action_spec, sequence_length, batch_size
+        )
+        torchdata.save_dataset(observations, actions, dataset_cache_path)
+        print(f"Saved parsed dataset to {dataset_cache_path}")
+    torch_dataset = torchdata.TorchDataset(observations, actions)
+    dataloader = torch.utils.data.DataLoader(torch_dataset, batch_size=batch_size, shuffle=True)
 
     model = model_class(
         observation_spec=time_step_spec['observation'],
         num_actions=num_actions,
+        fc_layer_params=(256, 128),
     )
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     loss_fn = nn.CrossEntropyLoss()
@@ -153,13 +75,10 @@ def train(
         total_loss = 0
         num_batches = 0
 
-        for observations, actions in dataset:
-            # Convert all observation features to PyTorch tensors and move to device
+        for observations, actions in dataloader:
             processed_observations = {}
-            for key, value in observations.items():
-                # Convert to PyTorch tensor and move to device
-                # All features should be float32 for the neural network input
-                tensor = torch.from_numpy(value).float().to(device)
+            for key, tensor in observations.items():
+                tensor = tensor.to(device)
 
                 # Reshape from (batch_size, sequence_length, ...) to (batch_size * sequence_length, ...)
                 # For scalar features, this will be (batch_size, sequence_length) -> (batch_size * sequence_length)
@@ -169,10 +88,8 @@ def train(
                 else: # Scalar features will be (B, S) after TFRecordDataset
                     processed_observations[key] = tensor.view(-1)
 
-            targets = torch.from_numpy(actions).long().to(device)
-            
             # Reshape targets from (batch_size, sequence_length) to (batch_size * sequence_length)
-            targets = targets.view(-1)
+            targets = actions.to(device).view(-1)
 
             logits = model(processed_observations)
             
@@ -210,7 +127,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train a behavioral cloning model.')
     parser.add_argument('--problem', type=str, required=True, help='The problem to train for (e.g., regalloc, sched).')
     parser.add_argument('--data_path', type=str, required=True, help='Path to the TFRecord training data.')
-    parser.add_argument('--model_dir', type=str, default='pytorch_models', help='Directory to save the trained models.')
+    parser.add_argument('--model_dir', type=str, default='models_and_dataset', help='Directory to save the trained models.')
     parser.add_argument('--gin_files', nargs='+', help='List of paths to gin configuration files.')
     parser.add_argument('--gin_bindings', nargs='+', help='Gin bindings to override the values set in the config files.')
     args = parser.parse_args()
