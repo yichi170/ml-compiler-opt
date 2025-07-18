@@ -34,6 +34,65 @@ class SchedEncodingNetwork(encoding_network.EncodingNetwork):
     # flatten the B x T x 256 x dim to B x T x (256 x dim).
     self._postprocessing_layers = self._postprocessing_layers[1:]
 
+  def call(self,
+           observation: types.NestedTensor,
+           step_type=None,
+           network_state=(),
+           training: bool = False):
+    # The following code is a modified version of the base class's call method.
+    # It is modified to apply the mask to the processed features before they
+    # are combined.
+    if self._batch_squash:
+      outer_rank = nest_utils.get_outer_rank(observation,
+                                             self.input_tensor_spec)
+      batch_squash = nest_utils.BatchSquash(outer_rank)
+      observation = tf.nest.map_structure(batch_squash.flatten, observation)
+
+    # Reconstruct the dictionary of layers to ensure correct mapping.
+    layers_dict = tf.nest.pack_sequence_as(self._preprocessing_nest,
+                                           self._flat_preprocessing_layers)
+
+    # Process each observation with its corresponding layer.
+    processed_dict = {}
+    if layers_dict is not None:
+      for key, tensor in observation.items():
+        processed_dict[key] = layers_dict[key](tensor, training=training)
+    else:
+      processed_dict = observation
+
+    # Apply the mask to the processed features.
+    mask = processed_dict['mask']
+    masked_dict = {}
+    for name, tensor in processed_dict.items():
+      if name == 'mask':
+        masked_dict[name] = tensor
+      else:
+        # Expand the mask to match the rank of the tensor for broadcasting.
+        expanded_mask = mask
+        while expanded_mask.shape.rank < tensor.shape.rank:
+          expanded_mask = tf.expand_dims(expanded_mask, -1)
+        masked_dict[name] = tensor * expanded_mask
+    processed = masked_dict
+
+    # Combine the processed features.
+    if self._preprocessing_combiner is not None:
+      # Flatten the dict in alphabetical order for the combiner.
+      tensors_to_combine = [
+          processed[key] for key in sorted(processed.keys())
+      ]
+      processed = self._preprocessing_combiner(tensors_to_combine)
+
+    # Apply post-processing layers.
+    state = processed
+    for layer in self._postprocessing_layers:
+      state = layer(state, training=training)
+
+    # Un-squash.
+    if self._batch_squash:
+      state = tf.nest.map_structure(batch_squash.unflatten, state)
+
+    return state, network_state
+
 
 class SchedProbProjectionNetwork(
     categorical_projection_network.CategoricalProjectionNetwork):
@@ -146,6 +205,9 @@ class SchedNetwork(network.DistributionNetwork):
 
     if not kernel_initializer:
       kernel_initializer = tf.compat.v1.keras.initializers.glorot_uniform()
+
+    if preprocessing_combiner is None:
+      preprocessing_combiner = tf.keras.layers.Concatenate(axis=-1)
 
     # input: B x T x obs_spec
     # output: B x T x 256 x dim
