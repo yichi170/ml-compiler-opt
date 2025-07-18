@@ -23,6 +23,7 @@ from tf_agents.networks import encoding_network
 from tf_agents.networks import network
 from tf_agents.typing import types
 from tf_agents.utils import nest_utils
+from tf_agents.networks.utils import BatchSquash
 
 
 class SchedEncodingNetwork(encoding_network.EncodingNetwork):
@@ -30,7 +31,7 @@ class SchedEncodingNetwork(encoding_network.EncodingNetwork):
   def __init__(self, **kwargs):
     super().__init__(**kwargs)
     # remove the first layer (Flatten) in postprocessing_layers cause this will
-    # flatten the B x T x 128 x dim to B x T x (128 x dim).
+    # flatten the B x T x 256 x dim to B x T x (256 x dim).
     self._postprocessing_layers = self._postprocessing_layers[1:]
 
 
@@ -39,8 +40,8 @@ class SchedProbProjectionNetwork(
 
   def __init__(self, **kwargs):
     super().__init__(**kwargs)
-    # shape after projection_layer: B x T x 128 x 1; then gets re-shaped to
-    # B x T x 128.
+    # shape after projection_layer: B x T x 256 x 1; then gets re-shaped to
+    # B x T x 256.
     self._projection_layer = tf.keras.layers.Dense(
         1,
         kernel_initializer=tf.compat.v1.keras.initializers.VarianceScaling(
@@ -49,17 +50,25 @@ class SchedProbProjectionNetwork(
         name='logits')
 
   def call(self, inputs, outer_rank, training=False, mask=None):
-    logits = self._projection_layer(inputs)
-    logits = tf.squeeze(logits, axis=-1)  # or whatever reshaping you have
+    batch_squash = BatchSquash(outer_rank)
+    inputs = batch_squash.flatten(inputs)
+    inputs = tf.cast(inputs, tf.float32)
+
+    logits = self._projection_layer(inputs, training=training)
+    logits = tf.reshape(logits, [-1] + self._output_shape.as_list())
+    logits = batch_squash.unflatten(logits)
 
     if mask is not None:
-      mask_bool = tf.cast(mask, tf.bool)
-      # Set logits of invalid positions to a large negative value
-      large_neg = tf.constant(-1e9, dtype=logits.dtype)
-      logits = tf.where(mask_bool, logits, large_neg)
+      if mask.shape.rank < logits.shape.rank:
+        mask = tf.expand_dims(mask, -2)
 
-    import tensorflow_probability as tfp
-    distribution = tfp.distributions.Categorical(logits=logits, dtype=tf.int64)
+      # Set logits of invalid positions to a large negative value
+      # Key: Use large_neg instead of almost_neg_inf (logits.dtype.min)
+      # to prevent having Inf values in loss.
+      large_neg = tf.constant(-1e9, dtype=logits.dtype)
+      logits = tf.where(tf.cast(mask, tf.bool), logits, large_neg)
+
+    distribution = self.output_spec.build_distribution(logits=logits)
     return distribution, ()
 
 
@@ -69,7 +78,7 @@ class SchedRNDEncodingNetwork(SchedEncodingNetwork):
   def __init__(self, **kwargs):
     pooling_layer = tf.keras.layers.GlobalMaxPool1D(data_format='channels_last')
     super().__init__(**kwargs)
-    # add a pooling layer at the end to to convert B x T x 128 x dim to
+    # add a pooling layer at the end to to convert B x T x 256 x dim to
     # B x T x dim.
     self._postprocessing_layers.append(pooling_layer)
 
@@ -139,7 +148,7 @@ class SchedNetwork(network.DistributionNetwork):
       kernel_initializer = tf.compat.v1.keras.initializers.glorot_uniform()
 
     # input: B x T x obs_spec
-    # output: B x T x 128 x dim
+    # output: B x T x 256 x dim
     encoder = SchedEncodingNetwork(
         input_tensor_spec=input_tensor_spec,
         preprocessing_layers=preprocessing_layers,
@@ -189,6 +198,7 @@ class SchedNetwork(network.DistributionNetwork):
     distribution, _ = self._projection_network(
         state, outer_rank, training=training, mask=observations['mask'])
 
-    tf.debugging.check_numerics(distribution.logits, message="[SchedNetwork] distribution contains NaN or Inf!")
+    tf.debugging.check_numerics(distribution.logits,
+                                message="[SchedNetwork] distribution contains NaN or Inf!")
 
     return distribution, network_state

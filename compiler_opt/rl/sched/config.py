@@ -65,7 +65,7 @@ def get_sched_signature_spec():
 def get_observation_processing_layer_creator(quantile_file_dir=None,
                                              with_sqrt=True,
                                              with_z_score_normalization=True,
-                                             eps=1e-6):
+                                             eps=1e-8):
   """Wrapper for observation_processing_layer."""
   quantile_map = feature_ops.build_quantile_map(quantile_file_dir)
 

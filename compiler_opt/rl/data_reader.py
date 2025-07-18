@@ -20,51 +20,6 @@ from tf_agents.trajectories import trajectory
 
 from compiler_opt.rl import agent_config
 
-
-def clean_sched_observation(observation_dict, action):
-  """Clean scheduling observation by masking invalid candidates and updating action.
-
-  Args:
-      observation_dict: Dictionary of observation tensors
-      action: Action tensor (index_to_sched)
-
-  Returns:
-      Tuple of (cleaned_observation_dict, cleaned_action)
-  """
-
-  # For each per-candidate feature, keep only valid candidates and pad back to original size
-  per_candidate_features = [
-    'mask', 'is_top', 'is_bot', 'pos', 'excess', 'current_max', 'critical_max',
-    'su_latency', 'su_height', 'su_depth', 'su_succs_left', 'su_preds_left',
-    'su_succs', 'su_preds'
-  ]
-
-  def clean_obs_per_batch(obs):
-    mask = obs['mask']
-    valid_indices = tf.where(tf.equal(mask, 1))[:, 0]
-
-    def gather_and_pad(feature_tensor):
-      valid_values = tf.gather(feature_tensor, valid_indices)
-      padded = tf.pad(valid_values, [[0, 256 - tf.shape(valid_values)[0]]])
-      padded.set_shape([256])
-      return padded
-
-    filtered = {}
-    for key in obs:
-      if key in per_candidate_features:
-        feature_tensor = obs[key]
-        filtered[key] = gather_and_pad(feature_tensor)
-      else:
-        filtered[key] = obs[key]
-
-    return filtered
-
-  cleaned_observation = tf.map_fn(clean_obs_per_batch, observation_dict)
-
-  # TODO: update action
-  return cleaned_observation, action
-
-
 def create_parser_fn(
     agent_cfg: agent_config.AgentConfig
 ) -> Callable[[str], trajectory.Trajectory]:
@@ -114,25 +69,6 @@ def create_parser_fn(
       reward = tf.cast(parsed_sequence[agent_cfg.time_step_spec.reward.name],
                        tf.float32)
 
-      # Apply cleaning for scheduling data if this is a scheduling problem
-      if 'mask' in parsed_sequence and agent_cfg.action_spec.name == 'index_to_sched':
-        # This is scheduling data, apply cleaning
-        cleaned_obs, cleaned_action = clean_sched_observation(parsed_sequence, action)
-        if cleaned_obs is not None:
-          # Replace with cleaned data
-          for key in cleaned_obs:
-            parsed_sequence[key] = cleaned_obs[key]
-          action = cleaned_action
-        else:
-          # Skip this sample by returning a dummy trajectory
-          # This will be filtered out later
-          dummy_obs = {k: tf.zeros_like(v) for k, v in parsed_sequence.items()}
-          return trajectory.from_episode(
-              observation=dummy_obs,
-              action=tf.zeros_like(action),
-              policy_info={},
-              reward=tf.zeros_like(reward))
-
       policy_info = agent_cfg.process_parsed_sequence_and_get_policy_info(
           parsed_sequence)
 
@@ -146,17 +82,6 @@ def create_parser_fn(
       return full_trajectory
 
   return _parser_fn
-
-
-def _filter_dummy_trajectories(traj):
-  """Filter out dummy trajectories created when actions were masked out."""
-  # Check if this is a dummy trajectory (all zeros)
-  if 'mask' in traj.observation:
-    mask_sum = tf.reduce_sum(traj.observation['mask'])
-    # If mask is all zeros, this is a dummy trajectory
-    return tf.greater(mask_sum, 0)
-  return True
-
 
 def create_flat_sequence_example_dataset_fn(
     agent_cfg: agent_config.AgentConfig
