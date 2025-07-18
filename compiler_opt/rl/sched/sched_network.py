@@ -48,6 +48,20 @@ class SchedProbProjectionNetwork(
         bias_initializer=tf.keras.initializers.Zeros(),
         name='logits')
 
+  def call(self, inputs, outer_rank, training=False, mask=None):
+    logits = self._projection_layer(inputs)
+    logits = tf.squeeze(logits, axis=-1)  # or whatever reshaping you have
+
+    if mask is not None:
+      mask_bool = tf.cast(mask, tf.bool)
+      # Set logits of invalid positions to a large negative value
+      large_neg = tf.constant(-1e9, dtype=logits.dtype)
+      logits = tf.where(mask_bool, logits, large_neg)
+
+    import tensorflow_probability as tfp
+    distribution = tfp.distributions.Categorical(logits=logits, dtype=tf.int64)
+    return distribution, ()
+
 
 @gin.configurable
 class SchedRNDEncodingNetwork(SchedEncodingNetwork):
@@ -168,10 +182,13 @@ class SchedNetwork(network.DistributionNetwork):
         step_type=step_type,
         network_state=network_state,
         training=training)
+    tf.debugging.check_numerics(state, message="[SchedNetwork] output contains NaN or Inf!")
     outer_rank = nest_utils.get_outer_rank(observations, self.input_tensor_spec)
 
     # mask out the empty data.
     distribution, _ = self._projection_network(
         state, outer_rank, training=training, mask=observations['mask'])
+
+    tf.debugging.check_numerics(distribution.logits, message="[SchedNetwork] distribution contains NaN or Inf!")
 
     return distribution, network_state

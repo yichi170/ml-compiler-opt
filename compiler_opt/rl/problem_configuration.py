@@ -101,6 +101,9 @@ class ProblemConfiguration(metaclass=abc.ABCMeta):
   def get_nonnormalized_features(self) -> Iterable[str]:
     return []
 
+  def get_scalar_features(self) -> Iterable[str]:
+    return []
+
   @abc.abstractmethod
   def get_runner_type(self) -> 'type[compilation_runner.CompilationRunner]':
     raise NotImplementedError

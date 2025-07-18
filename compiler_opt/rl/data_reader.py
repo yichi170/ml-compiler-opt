@@ -31,18 +31,6 @@ def clean_sched_observation(observation_dict, action):
   Returns:
       Tuple of (cleaned_observation_dict, cleaned_action)
   """
-  # Get the mask
-  mask = observation_dict['mask']
-
-  # Find valid indices (where mask == 1)
-  valid_indices = tf.where(tf.equal(mask, 1))[:, 0]
-
-  # Update action to new index
-  try:
-    new_action = tf.where(tf.equal(valid_indices, action))[0, 0]
-  except tf.errors.InvalidArgumentError:
-    # Action was masked out, return None to filter this sample
-    return None, None
 
   # For each per-candidate feature, keep only valid candidates and pad back to original size
   per_candidate_features = [
@@ -51,33 +39,30 @@ def clean_sched_observation(observation_dict, action):
     'su_succs', 'su_preds'
   ]
 
-  cleaned_observation = {}
+  def clean_obs_per_batch(obs):
+    mask = obs['mask']
+    valid_indices = tf.where(tf.equal(mask, 1))[:, 0]
 
-  for feature_name in observation_dict:
-    if feature_name in per_candidate_features:
-      # Get valid values
-      feature_tensor = observation_dict[feature_name]
+    def gather_and_pad(feature_tensor):
       valid_values = tf.gather(feature_tensor, valid_indices)
+      padded = tf.pad(valid_values, [[0, 256 - tf.shape(valid_values)[0]]])
+      padded.set_shape([256])
+      return padded
 
-      # Create new mask for cleaned data
-      if feature_name == 'mask':
-        # All remaining candidates are valid
-        cleaned_feature = tf.concat([
-          tf.ones(tf.shape(valid_values), dtype=feature_tensor.dtype),
-          tf.zeros(tf.shape(feature_tensor)[0] - tf.shape(valid_values)[0], dtype=feature_tensor.dtype)
-        ], axis=0)
+    filtered = {}
+    for key in obs:
+      if key in per_candidate_features:
+        feature_tensor = obs[key]
+        filtered[key] = gather_and_pad(feature_tensor)
       else:
-        # Pad with zeros to maintain original shape
-        padding_size = tf.shape(feature_tensor)[0] - tf.shape(valid_values)[0]
-        padding = tf.zeros([padding_size], dtype=feature_tensor.dtype)
-        cleaned_feature = tf.concat([valid_values, padding], axis=0)
+        filtered[key] = obs[key]
 
-      cleaned_observation[feature_name] = cleaned_feature
-    else:
-      # Non-per-candidate features remain unchanged
-      cleaned_observation[feature_name] = observation_dict[feature_name]
+    return filtered
 
-  return cleaned_observation, new_action
+  cleaned_observation = tf.map_fn(clean_obs_per_batch, observation_dict)
+
+  # TODO: update action
+  return cleaned_observation, action
 
 
 def create_parser_fn(
@@ -202,7 +187,6 @@ def create_flat_sequence_example_dataset_fn(
                 .filter(lambda string: tf.strings.length(string) > 0)
                 .map(parser_fn)
                 .filter(lambda traj: tf.size(traj.reward) > 2)
-                .filter(_filter_dummy_trajectories)
                 .unbatch()
                )
     # yapf: enable
@@ -291,8 +275,7 @@ def create_file_dataset_fn(
                  count=shuffle_repeat_count))
         .map(parser_fn, num_parallel_calls=num_map_threads)
         # Only keep sequences of length 2 or more.
-        .filter(lambda traj: tf.size(traj.reward) > 2)
-        .filter(_filter_dummy_trajectories))
+        .filter(lambda traj: tf.size(traj.reward) > 2))
 
     # TODO(yundi): window and subsample data.
     # TODO(yundi): verify the shuffling is correct.

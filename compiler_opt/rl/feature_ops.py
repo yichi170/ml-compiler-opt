@@ -62,8 +62,9 @@ def get_normalize_fn(quantile: list[float],
     # pylint: disable=unnecessary-lambda-assignment
     preprocessing_fn = lambda x: x
   processed_quantile = [preprocessing_fn(x) for x in quantile]
-  mean = np.mean(processed_quantile)
-  std = np.std(processed_quantile)
+
+  mean = np.mean(processed_quantile) + eps
+  std = np.std(processed_quantile) + eps
 
   def normalize(obs: types.Float):
     obs = tf.expand_dims(obs, -1)

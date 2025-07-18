@@ -72,7 +72,7 @@ class SchedRunner(compilation_runner.CompilationRunner):
     if self._launcher_path:
       cmdline.append(self._launcher_path)
     cmdline.extend([self._clang_path] + list(command_line) + [
-        '-mllvm', '-amdgpu-sched-strategy=max-ilp',
+        '-mllvm', '-amdgpu-sched-strategy=mlgo',
         '-mllvm', '-sched-mode=development',
         '-mllvm', '-mlsched-training-log=' + log_path, '-o', output_native_path
     ])

@@ -39,3 +39,6 @@ class InstructionSchedulingConfig(problem_configuration.ProblemConfiguration):
 
   def get_nonnormalized_features(self):
     return config.get_nonnormalized_features()
+
+  def get_scalar_features(self):
+    return config.get_scalar_features()

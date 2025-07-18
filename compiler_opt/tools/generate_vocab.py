@@ -29,7 +29,7 @@ import gin
 import numpy as np
 import tensorflow as tf
 
-from compiler_opt.rl import registry
+from compiler_opt.rl import problem_configuration, registry
 
 _INPUT = flags.DEFINE_string(
     'input',
@@ -118,6 +118,14 @@ def create_tfrecord_parser_fn(
           if isinstance(v, tf.RaggedTensor):
             v = v.to_tensor()
           parsed_array.append(tf.reshape(v, [-1]))
+
+        if 'mask' in parsed_sequence:
+          mask = parsed_sequence['mask']
+          if isinstance(mask, tf.RaggedTensor):
+            mask = mask.to_tensor()
+          parsed_array.append(tf.reshape(mask, [-1]))
+        else:
+          parsed_array.append(tf.constant([], dtype=tf.int64))
         return parsed_array
       except ValueError as e:
         # ignore malformed or invalid serialized_proto inputs
@@ -126,12 +134,27 @@ def create_tfrecord_parser_fn(
   return _parser_fn
 
 
-def _generate_vocab(feature_values_arrays, feature_name,
+def _generate_vocab(feature_values_arrays, mask_array, scalar_features, feature_name,
                     rng: np.random.Generator):
   """Downsample and generate vocab using brute force method."""
+  if feature_name == 'mask':
+    return
+
   feature_values = np.concatenate(feature_values_arrays)
+  masks = np.concatenate(mask_array)
+
+  if feature_name not in scalar_features:
+    feature_values = feature_values[masks == 1]
+  else:
+    feature_values = feature_values
+
   sample_length = math.floor(
       np.shape(feature_values)[0] * _SAMPLING_FRACTION.value)
+
+  if sample_length == 0:
+    logging.info(f'Warning: No valid values for feature {feature_name}')
+    return
+
   values = rng.choice(feature_values, sample_length, replace=False)
   bin_edges = np.quantile(values, np.linspace(0, 1, _NUM_BUCKETS.value))
   filename = os.path.join(_OUTPUT_DIR.value, f'{feature_name}.buckets')
@@ -151,6 +174,7 @@ def main(_) -> None:
   dataset = tf.data.Dataset.list_files(_INPUT.value)
   dataset = tf.data.TFRecordDataset(dataset)
   features_to_not_process = problem_config.get_nonnormalized_features()
+  scalar_features = problem_config.get_scalar_features()
 
   sequence_features = {}
   # TODO(b/222775595): need to fix this after update to logic for handling
@@ -171,17 +195,23 @@ def main(_) -> None:
   if not sequence_features:
     raise ValueError('No module with non-empty sequence_features values found.')
 
+  sequence_features['mask'] = tf.io.RaggedFeature(partitions=(), dtype=tf.int64)
+
   parser_fn = create_tfrecord_parser_fn(sequence_features)
   dataset = dataset.map(parser_fn, num_parallel_calls=tf.data.AUTOTUNE)
   data_list = np.array(list(dataset.as_numpy_iterator()), dtype=object)
   data_list = data_list.swapaxes(0, 1)
   rng = np.random.default_rng()
 
+  mask_array = data_list[-1]
+  data_list = data_list[:-1]
+
   with mp.Pool(_PARALLELISM.value) as pool:
     feature_names = sorted(sequence_features)
     for i, feature_values_arrays in enumerate(data_list):
       pool.apply_async(_generate_vocab,
-                       (feature_values_arrays, feature_names[i], rng))
+                       (feature_values_arrays, mask_array,
+                        scalar_features, feature_names[i], rng))
     pool.close()
     pool.join()
 

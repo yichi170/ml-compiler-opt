@@ -32,11 +32,15 @@ def get_sched_signature_spec():
 
   observation_spec = {
       key: tf.TensorSpec(dtype=tf.int64, shape=(num_candidates), name=key)
-      for key in ('mask', 'is_top', 'is_bot', 'pos',
-                  'excess', 'current_max', 'critical_max',
+      for key in ('mask', 'is_top', 'is_bot')
+  }
+
+  observation_spec.update({
+      key: tf.TensorSpec(dtype=tf.int64, shape=(num_candidates), name=key)
+      for key in ('pos', 'excess', 'current_max', 'critical_max',
                   'su_latency', 'su_height', 'su_depth',
                   'su_succs_left', 'su_preds_left', 'su_succs', 'su_preds')
-  }
+  })
 
   observation_spec.update({
       key: tf.TensorSpec(dtype=tf.int64, shape=(), name=key)
@@ -61,9 +65,19 @@ def get_sched_signature_spec():
 def get_observation_processing_layer_creator(quantile_file_dir=None,
                                              with_sqrt=True,
                                              with_z_score_normalization=True,
-                                             eps=1e-8):
+                                             eps=1e-6):
   """Wrapper for observation_processing_layer."""
   quantile_map = feature_ops.build_quantile_map(quantile_file_dir)
+
+  def cast_to_float_and_apply(fn):
+    def wrapped(x):
+        x = tf.cast(x, tf.float32)
+        return fn(x)
+    return wrapped
+
+  def debug_layer(x):
+    tf.print("Debug obs:", x, "shape:", tf.shape(x), "dtype:", x.dtype)
+    return x
 
   def observation_processing_layer(obs_spec):
     """Creates the layer to process observation given obs_spec."""
@@ -83,6 +97,9 @@ def get_observation_processing_layer_creator(quantile_file_dir=None,
           first_non_zero = x
           break
 
+      if first_non_zero == 0:
+        first_non_zero = eps
+
       normalize_fn = feature_ops.get_normalize_fn(quantile, with_sqrt,
                                                   with_z_score_normalization,
                                                   eps)
@@ -95,29 +112,17 @@ def get_observation_processing_layer_creator(quantile_file_dir=None,
 
     if obs_spec.name in ['pos', 'excess', 'current_max', 'critical_max',
                          'su_succs_left', 'su_preds_left', 'su_succs', 'su_preds']:
-      return tf.keras.layers.Lambda(normalize_fn)
+      fn = cast_to_float_and_apply(normalize_fn)
+      return tf.keras.layers.Lambda(fn)
 
     if obs_spec.name in ('su_latency', 'su_height', 'su_depth'):
-      return tf.keras.layers.Lambda(log_normalize_fn)
+      fn = cast_to_float_and_apply(log_normalize_fn)
+      return tf.keras.layers.Lambda(fn)
 
-    if obs_spec.name == 'use_def_density':
-
-      def use_def_density_processing_fn(obs):
-        features = [tf.where(tf.math.is_inf(tf.expand_dims(obs, -1)), 1.0, 0.0)]
-        obs = tf.where(tf.math.is_inf(obs), 1.0, obs)
-        features.append(log_normalize_fn(obs))
-        # pylint: disable=unexpected-keyword-arg
-        return tf.concat(features, axis=-1)
-
-      return tf.keras.layers.Lambda(use_def_density_processing_fn)
-
-    if obs_spec.name in ('sgpr_critical_limit',
-                         'vgpr_critical_limit',
-                         'sgpr_excess_limit',
-                         'vgpr_excess_limit'):
+    if obs_spec.name in get_scalar_features():
 
       def gpr_limit_processing_fn(obs):
-        obs = tf.expand_dims(obs, -1)
+        obs = tf.cast(tf.expand_dims(obs, -1), tf.float32)
         obs = tf.tile(obs, [1, get_num_candidates()])
         obs = normalize_fn(obs)
         return obs
@@ -128,6 +133,11 @@ def get_observation_processing_layer_creator(quantile_file_dir=None,
 
   return observation_processing_layer
 
+def get_scalar_features():
+  return [
+    "sgpr_critical_limit", "vgpr_critical_limit",
+    "sgpr_excess_limit", "vgpr_excess_limit",
+  ]
 
 def get_nonnormalized_features():
   return [
