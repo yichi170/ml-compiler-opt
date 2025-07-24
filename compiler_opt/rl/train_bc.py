@@ -74,7 +74,7 @@ def train_eval(agent_config_type=agent_config.BCAgentConfig,
       time_step_spec=time_step_spec, action_spec=action_spec)
   agent: tf_policy.TFAgent = agent_config.create_agent(
       agent_cfg, preprocessing_layer_creator=preprocessing_layer_creator)
-  llvm_trainer = trainer.Trainer(root_dir=root_dir, agent=agent)
+  llvm_trainer = trainer.Trainer(root_dir=root_dir, agent=agent, bc_percentage_correct=True)
   policy_dict: dict[str, tf_policy.TFPolicy] = {
       'saved_policy': agent.policy,
       'saved_collect_policy': agent.collect_policy,

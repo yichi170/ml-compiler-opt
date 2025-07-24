@@ -155,6 +155,10 @@ class Trainer:
         self._percentage_correct.update_state(experience.action,
                                               policy_actions.action)
 
+        logging.info(f'experience.action: {tf.reshape(experience.action, [1, -1])}')
+        logging.info(f'policy.action: {tf.reshape(policy_actions.action, [1, -1])}')
+        logging.info(f'acc = {self._percentage_correct.result()}')
+
     # Check earlier rather than later if we should record summaries.
     # TF also checks it, but much later. Needed to avoid looping through
     # the dict so gave the if a bigger scope

@@ -42,10 +42,12 @@ class SchedEncodingNetwork(encoding_network.EncodingNetwork):
     # The following code is a modified version of the base class's call method.
     # It is modified to apply the mask to the processed features before they
     # are combined.
+    del step_type # unused.
+
     if self._batch_squash:
       outer_rank = nest_utils.get_outer_rank(observation,
                                              self.input_tensor_spec)
-      batch_squash = nest_utils.BatchSquash(outer_rank)
+      batch_squash = BatchSquash(outer_rank)
       observation = tf.nest.map_structure(batch_squash.flatten, observation)
 
     # Reconstruct the dictionary of layers to ensure correct mapping.
@@ -67,11 +69,7 @@ class SchedEncodingNetwork(encoding_network.EncodingNetwork):
       if name == 'mask':
         masked_dict[name] = tensor
       else:
-        # Expand the mask to match the rank of the tensor for broadcasting.
-        expanded_mask = mask
-        while expanded_mask.shape.rank < tensor.shape.rank:
-          expanded_mask = tf.expand_dims(expanded_mask, -1)
-        masked_dict[name] = tensor * expanded_mask
+        masked_dict[name] = tf.multiply(tensor, mask)
     processed = masked_dict
 
     # Combine the processed features.
@@ -107,29 +105,6 @@ class SchedProbProjectionNetwork(
             scale=kwargs['logits_init_output_factor']),
         bias_initializer=tf.keras.initializers.Zeros(),
         name='logits')
-
-  def call(self, inputs, outer_rank, training=False, mask=None):
-    batch_squash = BatchSquash(outer_rank)
-    inputs = batch_squash.flatten(inputs)
-    inputs = tf.cast(inputs, tf.float32)
-
-    logits = self._projection_layer(inputs, training=training)
-    logits = tf.reshape(logits, [-1] + self._output_shape.as_list())
-    logits = batch_squash.unflatten(logits)
-
-    if mask is not None:
-      if mask.shape.rank < logits.shape.rank:
-        mask = tf.expand_dims(mask, -2)
-
-      # Set logits of invalid positions to a large negative value
-      # Key: Use large_neg instead of almost_neg_inf (logits.dtype.min)
-      # to prevent having Inf values in loss.
-      large_neg = tf.constant(-1e9, dtype=logits.dtype)
-      logits = tf.where(tf.cast(mask, tf.bool), logits, large_neg)
-
-    distribution = self.output_spec.build_distribution(logits=logits)
-    return distribution, ()
-
 
 @gin.configurable
 class SchedRNDEncodingNetwork(SchedEncodingNetwork):
@@ -256,9 +231,8 @@ class SchedNetwork(network.DistributionNetwork):
     tf.debugging.check_numerics(state, message="[SchedNetwork] output contains NaN or Inf!")
     outer_rank = nest_utils.get_outer_rank(observations, self.input_tensor_spec)
 
-    # mask out the empty data.
     distribution, _ = self._projection_network(
-        state, outer_rank, training=training, mask=observations['mask'])
+        state, outer_rank, training=training, mask=None)
 
     tf.debugging.check_numerics(distribution.logits,
                                 message="[SchedNetwork] distribution contains NaN or Inf!")
