@@ -77,9 +77,8 @@ class SchedRunner(compilation_runner.CompilationRunner):
         '-mllvm', '-mlsched-training-log=' + log_path, '-o', output_native_path
     ])
 
-    # if tf_policy_path:
-    #   cmdline.extend(['-mllvm', '-regalloc-model=' + tf_policy_path])
-    # print('cmd: ', ' '.join(cmdline))
+    if tf_policy_path:
+      cmdline.extend(['-mllvm', '-mlsched-model=' + tf_policy_path])
     compilation_runner.start_cancellable_process(cmdline,
                                                  self._compilation_timeout,
                                                  self._cancellation_manager)

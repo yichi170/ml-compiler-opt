@@ -110,14 +110,17 @@ def get_observation_processing_layer_creator(quantile_file_dir=None,
           eps,
           preprocessing_fn=lambda x: tf.math.log(x + first_non_zero))
 
+    # TODO: figure out how to handle these features properly
     if obs_spec.name in ['pos', 'excess', 'current_max', 'critical_max',
                          'su_succs_left', 'su_preds_left', 'su_succs', 'su_preds']:
       fn = cast_to_float_and_apply(normalize_fn)
-      return tf.keras.layers.Lambda(fn)
+      # Currently using the raw data instead of normalizing it
+      return tf.keras.layers.Lambda(feature_ops.identity_fn)
 
     if obs_spec.name in ('su_latency', 'su_height', 'su_depth'):
       fn = cast_to_float_and_apply(log_normalize_fn)
-      return tf.keras.layers.Lambda(fn)
+      # Currently using the raw data instead of normalizing it
+      return tf.keras.layers.Lambda(feature_ops.identity_fn)
 
     if obs_spec.name in get_scalar_features():
 

@@ -156,6 +156,15 @@ class LocalDataCollector(data_collector.DataCollector):
     successful_work = [(spec, res.result())
                        for spec, res in finished_work
                        if not worker.get_exception(res)]
+    for spec, res in finished_work:
+      exc = worker.get_exception(res)
+      if exc:
+        print("="*40)
+        print(f"[ERROR] Worker failed for {spec.name}:")
+        print(f"{type(exc).__name__}: {exc}")
+        import traceback
+        traceback.print_exception(type(exc), exc, exc.__traceback__)
+        print("="*40)
     failures = len(finished_work) - len(successful_work)
 
     logging.info(('%d of %d modules finished in %d seconds (%d failures).'),

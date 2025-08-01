@@ -181,9 +181,6 @@ class SchedNetwork(network.DistributionNetwork):
     if not kernel_initializer:
       kernel_initializer = tf.compat.v1.keras.initializers.glorot_uniform()
 
-    if preprocessing_combiner is None:
-      preprocessing_combiner = tf.keras.layers.Concatenate(axis=-1)
-
     # input: B x T x obs_spec
     # output: B x T x 256 x dim
     encoder = SchedEncodingNetwork(
